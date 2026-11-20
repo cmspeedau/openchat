@@ -28,9 +28,11 @@ struct Conversation {
     id: u64,
     title: String,
     preview: String,
+    provider: ProviderChoice,
+    model_override: String,
+    base_url_override: String,
 }
 
-/// A message rendered in the center chat pane.
 #[derive(Clone)]
 struct Message {
     role: Role,
@@ -44,8 +46,6 @@ enum Role {
     System,
 }
 
-/// Placeholder skill entry shown in the right skills panel until
-/// the skills integration (Phase 3+) lands.
 struct Skill {
     name: String,
     description: String,
@@ -58,8 +58,7 @@ struct OpenChatApp {
     skills: Vec<Skill>,
     selected: Option<u64>,
     draft: String,
-    provider: ProviderChoice,
-    reply_rx: Option<Receiver<Result<String, String>>>,
+    reply_rx: Option<Receiver<StreamEvent>>,
     pending: bool,
 }
 
@@ -70,38 +69,87 @@ enum ProviderChoice {
     OpenAICompat,
 }
 
+enum StreamEvent {
+    Chunk(String),
+    Finished(Result<(), String>),
+}
+
 impl OpenChatApp {
     fn select_conversation(&mut self, id: u64) {
         self.selected = Some(id);
-        // Sessions are still local to this app shell; each selection starts a clean transcript.
         self.messages.clear();
     }
 }
 
 impl eframe::App for OpenChatApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut received = Vec::new();
+        let mut disconnected = false;
         if let Some(receiver) = &self.reply_rx {
-            if let Ok(result) = receiver.try_recv() {
-                self.pending = false;
-                self.reply_rx = None;
-                self.messages.push(Message {
-                    role: Role::Assistant,
-                    body: result.unwrap_or_else(|error| format!("Provider error: {error}")),
-                });
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let finished = matches!(&event, StreamEvent::Finished(_));
+                        received.push(event);
+                        if finished { break; }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
             }
         }
+        let mut finished = false;
+        for event in received {
+            match event {
+                StreamEvent::Chunk(chunk) => {
+                    if let Some(message) = self.messages.iter_mut().rev()
+                        .find(|message| message.role == Role::Assistant)
+                    {
+                        message.body.push_str(&chunk);
+                    }
+                }
+                StreamEvent::Finished(result) => {
+                    if let Err(error) = result {
+                        self.messages.push(Message {
+                            role: Role::Assistant,
+                            body: format!("Provider error: {error}"),
+                        });
+                    }
+                    finished = true;
+                }
+            }
+        }
+        if finished || disconnected {
+            if disconnected && !finished {
+                self.messages.push(Message {
+                    role: Role::Assistant,
+                    body: "Provider error: response stream ended unexpectedly.".into(),
+                });
+            }
+            self.pending = false;
+            self.reply_rx = None;
+        }
+
         if self.conversations.is_empty() {
-            // Placeholder conversations until sessions come from the daemon.
             self.conversations = vec![
                 Conversation {
                     id: 1,
                     title: "Welcome".to_string(),
                     preview: "Placeholder session".to_string(),
+                    provider: ProviderChoice::Mock,
+                    model_override: String::new(),
+                    base_url_override: String::new(),
                 },
                 Conversation {
                     id: 2,
                     title: "Scratch".to_string(),
                     preview: "Second placeholder".to_string(),
+                    provider: ProviderChoice::Mock,
+                    model_override: String::new(),
+                    base_url_override: String::new(),
                 },
             ];
             self.skills = vec![Skill {
@@ -125,18 +173,17 @@ impl OpenChatApp {
             .show(context, |ui| {
                 ui.heading("Chats");
                 ui.separator();
-                ScrollArea::vertical().show(ui, |ui| {
-                    let selected = self.selected;
-                    for conversation in &self.conversations {
-                        let is_selected = selected == Some(conversation.id);
-                        if ui
-                            .selectable_label(is_selected, &conversation.title)
-                            .clicked()
-                        {
-                            self.select_conversation(conversation.id);
+                ui.add_enabled_ui(!self.pending, |ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
+                        let selected = self.selected;
+                        for conversation in &self.conversations {
+                            let is_selected = selected == Some(conversation.id);
+                            if ui.selectable_label(is_selected, &conversation.title).clicked() {
+                                self.select_conversation(conversation.id);
+                            }
+                            ui.small(&conversation.preview);
                         }
-                        ui.small(&conversation.preview);
-                    }
+                    });
                 });
             });
     }
@@ -146,18 +193,32 @@ impl OpenChatApp {
             .resizable(true)
             .default_width(260.0)
             .show(context, |ui| {
-                ui.heading("Provider");
-                ui.radio_value(&mut self.provider, ProviderChoice::Mock, "Mock");
-                let configured = OpenAICompatProvider::from_env().is_some();
-                ui.add_enabled_ui(configured, |ui| {
-                    ui.radio_value(
-                        &mut self.provider,
-                        ProviderChoice::OpenAICompat,
-                        "OpenAI-compatible",
-                    );
-                });
-                if !configured {
-                    ui.small("Configure OPENCHAT_BASE_URL and OPENCHAT_API_KEY to enable.");
+                ui.heading("Conversation provider");
+                if let Some(conversation) = self.conversations.iter_mut()
+                    .find(|conversation| Some(conversation.id) == self.selected)
+                {
+                    ui.radio_value(&mut conversation.provider, ProviderChoice::Mock, "Mock");
+                    let configured = std::env::var("OPENCHAT_API_KEY")
+                        .map(|key| !key.trim().is_empty()).unwrap_or(false)
+                        && (std::env::var("OPENCHAT_BASE_URL")
+                            .map(|url| !url.trim().is_empty()).unwrap_or(false)
+                            || !conversation.base_url_override.trim().is_empty());
+                    ui.add_enabled_ui(configured, |ui| {
+                        ui.radio_value(&mut conversation.provider, ProviderChoice::OpenAICompat,
+                            "OpenAI-compatible");
+                    });
+                    if !configured {
+                        ui.small("Set OPENCHAT_API_KEY and OPENCHAT_BASE_URL, or enter a URL override.");
+                    }
+                    ui.add_space(6.0);
+                    ui.label("Model override (optional)");
+                    ui.add(TextEdit::singleline(&mut conversation.model_override)
+                        .hint_text("Use OPENCHAT_MODEL default"));
+                    ui.label("Base URL override (optional)");
+                    ui.add(TextEdit::singleline(&mut conversation.base_url_override)
+                        .hint_text("Use OPENCHAT_BASE_URL default"));
+                } else {
+                    ui.small("Select a conversation to configure its provider.");
                 }
                 ui.separator();
                 ui.heading("Skills");
@@ -179,13 +240,11 @@ impl OpenChatApp {
                 centered_text(ui, "Select a conversation to begin.");
                 return;
             }
-            ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    for message in &self.messages {
-                        message_row(ui, message);
-                    }
-                });
+            ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                for message in &self.messages {
+                    message_row(ui, message);
+                }
+            });
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -204,7 +263,7 @@ impl OpenChatApp {
                         if let Some(conversation) = self.conversations.iter_mut()
                             .find(|conversation| Some(conversation.id) == self.selected)
                         {
-                            conversation.preview = body.clone();
+                            conversation.preview = body;
                         }
                         self.draft.clear();
                         let messages = self.messages.iter().map(|message| ProviderMessage {
@@ -215,62 +274,73 @@ impl OpenChatApp {
                             }.to_string(),
                             content: message.body.clone(),
                         }).collect::<Vec<_>>();
-                        let provider: Box<dyn Provider> = match self.provider {
-                            ProviderChoice::Mock => Box::new(MockProvider),
-                            ProviderChoice::OpenAICompat => match OpenAICompatProvider::from_env() {
-                                Some(provider) => Box::new(provider),
-                                None => {
-                                    self.messages.push(Message { role: Role::Assistant,
-                                        body: "OpenAI-compatible provider is not configured.".into() });
-                                    return;
-                                }
-                            },
+                        let (choice, model, base_url) = match self.conversations.iter()
+                            .find(|conversation| Some(conversation.id) == self.selected)
+                        {
+                            Some(conversation) => (conversation.provider,
+                                conversation.model_override.clone(),
+                                conversation.base_url_override.clone()),
+                            None => return,
                         };
+                        let provider: Result<Box<dyn Provider>, String> = match choice {
+                            ProviderChoice::Mock => Ok(Box::new(MockProvider)),
+                            ProviderChoice::OpenAICompat => OpenAICompatProvider::from_env_with_overrides(
+                                nonempty(&base_url), nonempty(&model))
+                                .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                                .ok_or_else(|| "OpenAI-compatible provider is not configured (set OPENCHAT_API_KEY and a base URL).".to_string()),
+                        };
+                        let provider = match provider {
+                            Ok(provider) => provider,
+                            Err(error) => {
+                                self.messages.push(Message { role: Role::Assistant,
+                                    body: format!("Provider error: {error}") });
+                                return;
+                            }
+                        };
+                        self.messages.push(Message { role: Role::Assistant, body: String::new() });
                         let (sender, receiver) = mpsc::channel();
                         self.reply_rx = Some(receiver);
                         self.pending = true;
                         std::thread::spawn(move || {
-                            let _ = sender.send(provider.send(&messages));
+                            let result = provider.stream(&messages, &mut |chunk| {
+                                let _ = sender.send(StreamEvent::Chunk(chunk.to_string()));
+                            });
+                            let _ = sender.send(StreamEvent::Finished(result));
                         });
                     }
                     if self.pending {
                         ui.spinner();
-                        ui.small("Waiting for provider…");
+                        ui.small("Receiving reply…");
                     }
-                    if send.clicked() {
-                        response.request_focus();
-                    }
+                    if send.clicked() { response.request_focus(); }
                 });
             });
         });
     }
 }
 
+fn nonempty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() { None } else { Some(value) }
+}
+
 fn message_row(ui: &mut Ui, message: &Message) {
     match message.role {
         Role::System => {
-            ui.vertical_centered(|ui| {
-                ui.small(message.body.clone());
-            });
+            ui.vertical_centered(|ui| { ui.small(message.body.clone()); });
         }
         Role::User => {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                ui.add_sized(
-                    [ui.available_width() * 0.6, 0.0],
-                    egui::Label::new(egui::RichText::new(message.body.clone()).background_color(
-                        theme::ACCENT.gamma_multiply(0.2),
-                    )),
-                );
+                ui.add_sized([ui.available_width() * 0.6, 0.0],
+                    egui::Label::new(egui::RichText::new(message.body.clone())
+                        .background_color(theme::ACCENT.gamma_multiply(0.2))));
             });
         }
         Role::Assistant => {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                ui.add_sized(
-                    [ui.available_width() * 0.6, 0.0],
-                    egui::Label::new(egui::RichText::new(message.body.clone()).background_color(
-                        theme::PANEL,
-                    )),
-                );
+                ui.add_sized([ui.available_width() * 0.6, 0.0],
+                    egui::Label::new(egui::RichText::new(message.body.clone())
+                        .background_color(theme::PANEL)));
             });
         }
     }
