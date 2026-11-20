@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: openchat-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: openchat-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: openchat-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux eframe system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev libgl1-mesa-dev libegl1-mesa-dev libwayland-dev libxkbcommon-dev
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }} -p openchat-app
+      - name: Package (Linux AppImage)
+        if: runner.os == 'Linux'
+        run: |
+          set -eux
+          APPDIR=AppDir
+          mkdir -p $APPDIR/usr/bin $APPDIR/usr/share/applications $APPDIR/usr/share/icons/hicolor/256x256/apps
+          cp target/${{ matrix.target }}/release/openchat-app $APPDIR/usr/bin/openchat
+          cp assets/icon.png $APPDIR/usr/share/icons/hicolor/256x256/apps/openchat.png
+          cat > $APPDIR/openchat.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=openchat
+          Exec=openchat
+          Icon=openchat
+          Categories=Utility;
+          EOF
+          cp $APPDIR/openchat.desktop $APPDIR/usr/share/applications/openchat.desktop
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x linuxdeploy appimagetool
+          ./linuxdeploy --appdir $APPDIR
+          ./appimagetool $APPDIR ${{ matrix.artifact }}.AppImage
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p openchat.app/Contents/MacOS
+          cp target/${{ matrix.target }}/release/openchat-app openchat.app/Contents/MacOS/openchat
+          zip -r ${{ matrix.artifact }}.zip openchat.app
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          powershell -Command "Compress-Archive -Path target/${{ matrix.target }}/release/openchat-app.exe -DestinationPath ${{ matrix.artifact }}.zip"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.AppImage
+            ${{ matrix.artifact }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
