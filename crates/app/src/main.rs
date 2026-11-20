@@ -1,4 +1,8 @@
+mod provider;
 mod theme;
+
+use provider::{Message as ProviderMessage, MockProvider, OpenAICompatProvider, Provider};
+use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui::{self, ScrollArea, SidePanel, TextEdit, Ui};
 
@@ -27,6 +31,7 @@ struct Conversation {
 }
 
 /// A message rendered in the center chat pane.
+#[derive(Clone)]
 struct Message {
     role: Role,
     body: String,
@@ -53,33 +58,38 @@ struct OpenChatApp {
     skills: Vec<Skill>,
     selected: Option<u64>,
     draft: String,
+    provider: ProviderChoice,
+    reply_rx: Option<Receiver<Result<String, String>>>,
+    pending: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum ProviderChoice {
+    #[default]
+    Mock,
+    OpenAICompat,
 }
 
 impl OpenChatApp {
     fn select_conversation(&mut self, id: u64) {
         self.selected = Some(id);
-        // Placeholder transcript until the provider integration (Phase 3).
-        self.messages = vec![
-            Message {
-                role: Role::System,
-                body: "This is a placeholder transcript. Provider integration lands in Phase 3."
-                    .to_string(),
-            },
-            Message {
-                role: Role::User,
-                body: "Hello!".to_string(),
-            },
-            Message {
-                role: Role::Assistant,
-                body: "Hi — the chat backend is not wired up yet, so this reply is static."
-                    .to_string(),
-            },
-        ];
+        // Sessions are still local to this app shell; each selection starts a clean transcript.
+        self.messages.clear();
     }
 }
 
 impl eframe::App for OpenChatApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(receiver) = &self.reply_rx {
+            if let Ok(result) = receiver.try_recv() {
+                self.pending = false;
+                self.reply_rx = None;
+                self.messages.push(Message {
+                    role: Role::Assistant,
+                    body: result.unwrap_or_else(|error| format!("Provider error: {error}")),
+                });
+            }
+        }
         if self.conversations.is_empty() {
             // Placeholder conversations until sessions come from the daemon.
             self.conversations = vec![
@@ -103,6 +113,7 @@ impl eframe::App for OpenChatApp {
         self.conversations_panel(context);
         self.skills_panel(context);
         self.chat_panel(context);
+        if self.pending { context.request_repaint_after(std::time::Duration::from_millis(50)); }
     }
 }
 
@@ -135,6 +146,20 @@ impl OpenChatApp {
             .resizable(true)
             .default_width(260.0)
             .show(context, |ui| {
+                ui.heading("Provider");
+                ui.radio_value(&mut self.provider, ProviderChoice::Mock, "Mock");
+                let configured = OpenAICompatProvider::from_env().is_some();
+                ui.add_enabled_ui(configured, |ui| {
+                    ui.radio_value(
+                        &mut self.provider,
+                        ProviderChoice::OpenAICompat,
+                        "OpenAI-compatible",
+                    );
+                });
+                if !configured {
+                    ui.small("Configure OPENCHAT_BASE_URL and OPENCHAT_API_KEY to enable.");
+                }
+                ui.separator();
                 ui.heading("Skills");
                 ui.separator();
                 ScrollArea::vertical().show(ui, |ui| {
@@ -173,19 +198,44 @@ impl OpenChatApp {
                     let submitted = send.clicked()
                         || (response.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                    if submitted && !self.draft.trim().is_empty() {
+                    if submitted && !self.draft.trim().is_empty() && !self.pending {
                         let body = self.draft.trim().to_string();
-                        self.messages.push(Message {
-                            role: Role::User,
-                            body,
-                        });
+                        self.messages.push(Message { role: Role::User, body: body.clone() });
+                        if let Some(conversation) = self.conversations.iter_mut()
+                            .find(|conversation| Some(conversation.id) == self.selected)
+                        {
+                            conversation.preview = body.clone();
+                        }
                         self.draft.clear();
-                        // Placeholder acknowledgment; the provider backend lands in Phase 3.
-                        self.messages.push(Message {
-                            role: Role::Assistant,
-                            body: "(No backend attached yet — see Phase 3 on the roadmap.)"
-                                .to_string(),
+                        let messages = self.messages.iter().map(|message| ProviderMessage {
+                            role: match message.role {
+                                Role::User => "user",
+                                Role::Assistant => "assistant",
+                                Role::System => "system",
+                            }.to_string(),
+                            content: message.body.clone(),
+                        }).collect::<Vec<_>>();
+                        let provider: Box<dyn Provider> = match self.provider {
+                            ProviderChoice::Mock => Box::new(MockProvider),
+                            ProviderChoice::OpenAICompat => match OpenAICompatProvider::from_env() {
+                                Some(provider) => Box::new(provider),
+                                None => {
+                                    self.messages.push(Message { role: Role::Assistant,
+                                        body: "OpenAI-compatible provider is not configured.".into() });
+                                    return;
+                                }
+                            },
+                        };
+                        let (sender, receiver) = mpsc::channel();
+                        self.reply_rx = Some(receiver);
+                        self.pending = true;
+                        std::thread::spawn(move || {
+                            let _ = sender.send(provider.send(&messages));
                         });
+                    }
+                    if self.pending {
+                        ui.spinner();
+                        ui.small("Waiting for provider…");
                     }
                     if send.clicked() {
                         response.request_focus();
