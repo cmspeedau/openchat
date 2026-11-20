@@ -4,7 +4,7 @@ openchat is a standalone AI chat client built with Rust, egui, and eframe. The p
 
 Planned integrations include OpenCode (including its skills), configurable CPU governor controls, Slop Law (anti-slop prompt and linting tools), and a Telegram bot. Releases are currently planned to be unsigned.
 
-This repository is at Phase 0: a workspace and initial crate scaffolding. Most modules are intentionally stubs; no integrations are implemented yet.
+The workspace now includes the egui desktop app, CPU governor controls, provider integrations, Slop Law tooling, OpenCode attachment, and a Telegram bot. Remaining work is managed OpenCode mode, packaging, and final polish.
 
 ## Workspace
 
