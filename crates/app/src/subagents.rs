@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 /// and report progress through channels consumed by the UI thread.
 /// The demo-only status ticker is kept as a UI placeholder until the
 /// app shell consumes TaskEvent directly.
-
 pub enum TaskKind {
     /// Run the Slop Law linter over the given text.
     LintSlop(String),
@@ -13,9 +12,20 @@ pub enum TaskKind {
 
 #[derive(Clone, Debug)]
 pub enum TaskEvent {
-    Started { task_id: u64, name: String },
-    Finished { task_id: u64, name: String, summary: String },
-    Failed { task_id: u64, name: String, error: String },
+    Started {
+        task_id: u64,
+        name: String,
+    },
+    Finished {
+        task_id: u64,
+        name: String,
+        summary: String,
+    },
+    Failed {
+        task_id: u64,
+        name: String,
+        error: String,
+    },
 }
 
 /// A subagent runs one task on a background thread and streams
@@ -26,21 +36,34 @@ pub struct Subagent {
 
 impl Subagent {
     pub fn new(name: &str) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+        }
     }
 
     /// Spawn the task on its own thread. Events arrive on `events`.
     pub fn spawn(&self, task_id: u64, task: TaskKind, events: Sender<TaskEvent>) {
         let name = self.name.clone();
         std::thread::spawn(move || {
-            let _ = events.send(TaskEvent::Started { task_id, name: name.clone() });
+            let _ = events.send(TaskEvent::Started {
+                task_id,
+                name: name.clone(),
+            });
             match task {
                 TaskKind::LintSlop(text) => match run_lint(&text) {
                     Ok(summary) => {
-                        let _ = events.send(TaskEvent::Finished { task_id, name, summary });
+                        let _ = events.send(TaskEvent::Finished {
+                            task_id,
+                            name,
+                            summary,
+                        });
                     }
                     Err(error) => {
-                        let _ = events.send(TaskEvent::Failed { task_id, name, error });
+                        let _ = events.send(TaskEvent::Failed {
+                            task_id,
+                            name,
+                            error,
+                        });
                     }
                 },
             }
@@ -75,7 +98,12 @@ pub struct SubagentStatus {
 }
 impl SubagentStatus {
     fn demo(name: &'static str, steps: &'static [&'static str]) -> Self {
-        Self { name, steps, step: 0, updated_at: Instant::now() }
+        Self {
+            name,
+            steps,
+            step: 0,
+            updated_at: Instant::now(),
+        }
     }
     pub fn advance_demo(&mut self, now: Instant) {
         if now.duration_since(self.updated_at) >= Duration::from_secs(4) {
@@ -83,12 +111,24 @@ impl SubagentStatus {
             self.updated_at = now;
         }
     }
-    pub fn current_step(&self) -> &'static str { self.steps[self.step] }
+    pub fn current_step(&self) -> &'static str {
+        self.steps[self.step]
+    }
 }
 pub fn demo_agents() -> Vec<SubagentStatus> {
     vec![
-        SubagentStatus::demo("Researcher (demo)", &["Reviewing context", "Collecting notes", "Ready to report"]),
-        SubagentStatus::demo("Reviewer (demo)", &["Checking consistency", "Finding edge cases", "Review complete"]),
+        SubagentStatus::demo(
+            "Researcher (demo)",
+            &["Reviewing context", "Collecting notes", "Ready to report"],
+        ),
+        SubagentStatus::demo(
+            "Reviewer (demo)",
+            &[
+                "Checking consistency",
+                "Finding edge cases",
+                "Review complete",
+            ],
+        ),
     ]
 }
 
@@ -100,7 +140,11 @@ mod tests {
     #[test]
     fn lint_task_reports_findings() {
         let (tx, rx) = mpsc::channel();
-        Subagent::new("Linter").spawn(1, TaskKind::LintSlop("a testament to her journey".into()), tx);
+        Subagent::new("Linter").spawn(
+            1,
+            TaskKind::LintSlop("a testament to her journey".into()),
+            tx,
+        );
         let mut saw_finished = false;
         for event in rx.iter() {
             match event {

@@ -23,7 +23,11 @@ impl Logits {
             .into_iter()
             .map(|(token, value)| Logit { token, value })
             .collect();
-        entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.value
+                .partial_cmp(&a.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Self { entries }
     }
 }
@@ -39,7 +43,10 @@ impl AntislopSampler {
     /// `banned` tokens are excluded at every step; `temperature` <= 0 makes
     /// sampling deterministic (argmax of the allowed distribution).
     pub fn new(banned: Vec<String>, temperature: f32) -> Self {
-        Self { banned, temperature }
+        Self {
+            banned,
+            temperature,
+        }
     }
 
     /// Sample one token. `is_slop` receives each candidate token and reports

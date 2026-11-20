@@ -11,7 +11,7 @@ pub mod prompt;
 pub mod sampling;
 
 pub use lint::{SlopLint, SlopLintConfig};
-pub use sampling::{Logits, AntislopSampler};
+pub use sampling::{AntislopSampler, Logits};
 
 #[cfg(test)]
 mod tests {
@@ -28,14 +28,22 @@ mod tests {
     #[test]
     fn lint_clean_text() {
         let lint = SlopLint::new(SlopLintConfig::default());
-        assert!(lint.check("The librarian catalogued the shipment of braille hymnals.").is_empty());
+        assert!(lint
+            .check("The librarian catalogued the shipment of braille hymnals.")
+            .is_empty());
     }
 
     #[test]
     fn sampler_suppresses_banned_token() {
-        let logits = Logits::new(vec![("chasm".into(), 5.0), ("gulf".into(), 4.9), ("reef".into(), 0.1)]);
+        let logits = Logits::new(vec![
+            ("chasm".into(), 5.0),
+            ("gulf".into(), 4.9),
+            ("reef".into(), 0.1),
+        ]);
         let mut sampler = AntislopSampler::new(vec!["chasm".into()], 0.7);
-        let chosen = sampler.sample(&logits, &mut |token| token == "chasm").unwrap();
+        let chosen = sampler
+            .sample(&logits, &mut |token| token == "chasm")
+            .unwrap();
         assert_ne!(chosen, "chasm");
     }
 
@@ -43,6 +51,8 @@ mod tests {
     fn sampler_all_excluded_is_error() {
         let logits = Logits::new(vec![("chasm".into(), 1.0)]);
         let mut sampler = AntislopSampler::new(vec!["chasm".into()], 0.7);
-        assert!(sampler.sample(&logits, &mut |token| token == "chasm").is_err());
+        assert!(sampler
+            .sample(&logits, &mut |token| token == "chasm")
+            .is_err());
     }
 }

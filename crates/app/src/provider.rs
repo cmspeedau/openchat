@@ -17,8 +17,12 @@ pub struct MockProvider;
 
 impl Provider for MockProvider {
     fn stream(&self, messages: &[Message], on_chunk: &mut dyn FnMut(&str)) -> Result<(), String> {
-        let last = messages.iter().rev().find(|message| message.role == "user")
-            .map(|message| message.content.as_str()).unwrap_or("");
+        let last = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .unwrap_or("");
         let reply = format!("Mock reply: {last}");
         let characters = reply.chars().collect::<Vec<_>>();
         for chunk in characters.chunks(8) {
@@ -49,7 +53,8 @@ impl OpenAICompatProvider {
         if base_url.trim().is_empty() || api_key.trim().is_empty() {
             return None;
         }
-        let model = model.map(str::to_owned)
+        let model = model
+            .map(str::to_owned)
             .or_else(|| std::env::var("OPENCHAT_MODEL").ok())
             .filter(|model| !model.trim().is_empty())
             .unwrap_or_else(|| "gpt-4o-mini".into());
@@ -72,7 +77,9 @@ impl Provider for OpenAICompatProvider {
                 "content": message.content,
             })).collect::<Vec<Value>>(),
         });
-        let response = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).build()
+        let response = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(60))
+            .build()
             .post(&endpoint)
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")
@@ -96,15 +103,23 @@ impl Provider for OpenAICompatProvider {
         if !done && !data.is_empty() {
             done = process_sse_data(&data, on_chunk)?;
         }
-        if done { Ok(()) } else { Err("provider stream ended before the [DONE] marker".into()) }
+        if done {
+            Ok(())
+        } else {
+            Err("provider stream ended before the [DONE] marker".into())
+        }
     }
 }
 
 /// Parse an SSE event, emitting any content delta. Returns true at [DONE].
 fn process_sse_data(data: &[String], on_chunk: &mut dyn FnMut(&str)) -> Result<bool, String> {
-    if data.is_empty() { return Ok(false); }
+    if data.is_empty() {
+        return Ok(false);
+    }
     let payload = data.join("\n");
-    if payload.trim() == "[DONE]" { return Ok(true); }
+    if payload.trim() == "[DONE]" {
+        return Ok(true);
+    }
     let event: Value = serde_json::from_str(&payload)
         .map_err(|error| format!("invalid provider stream event: {error}"))?;
     if let Some(error) = event.get("error") {
@@ -112,11 +127,19 @@ fn process_sse_data(data: &[String], on_chunk: &mut dyn FnMut(&str)) -> Result<b
     }
     if let Some(content) = event.pointer("/choices/0/delta/content") {
         match content {
-            Value::String(text) => if !text.is_empty() { on_chunk(text); },
-            Value::Array(parts) => for part in parts {
-                if let Some(text) = part.get("text").and_then(Value::as_str) { on_chunk(text); }
-            },
-            Value::Null => {},
+            Value::String(text) => {
+                if !text.is_empty() {
+                    on_chunk(text);
+                }
+            }
+            Value::Array(parts) => {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        on_chunk(text);
+                    }
+                }
+            }
+            Value::Null => {}
             _ => return Err("provider stream returned unsupported content delta".into()),
         }
     }

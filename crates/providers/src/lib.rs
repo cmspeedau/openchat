@@ -49,7 +49,10 @@ pub trait LogitsCapableProvider {
 /// Shared HTTP plumbing for llama.cpp (`/v1/chat/completions` with
 /// `logprobs`-style logits) and koboldcpp (`/api/extra/generate`).
 fn decode_endpoint_error(status: u16, body: &str) -> ProviderError {
-    format!("backend returned HTTP {status}: {}", body.chars().take(300).collect::<String>())
+    format!(
+        "backend returned HTTP {status}: {}",
+        body.chars().take(300).collect::<String>()
+    )
 }
 
 /// llama.cpp server client.
@@ -79,16 +82,22 @@ impl LlamaCppProvider {
         self
     }
 
-    fn request(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
-        let mut request = ureq::post(&format!("{}{path}", self.base_url))
-            .set("Content-Type", "application/json");
+    fn request(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        let mut request =
+            ureq::post(&format!("{}{path}", self.base_url)).set("Content-Type", "application/json");
         if let Some(key) = &self.api_key {
             request = request.set("Authorization", &format!("Bearer {key}"));
         }
         let response = request
             .send_json(body.clone())
             .map_err(|error| format!("llama.cpp request failed: {error}"))?;
-        response.into_json().map_err(|error| format!("llama.cpp bad JSON: {error}"))
+        response
+            .into_json()
+            .map_err(|error| format!("llama.cpp bad JSON: {error}"))
     }
 }
 
@@ -137,7 +146,10 @@ fn parse_llamacpp_logprobs(response: &serde_json::Value) -> Result<LogitsStep, P
     let top = choice
         .pointer("/logprobs/content/0/top_logprobs")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| "llama.cpp response missing top_logprobs (server must be built with logit support)".to_string())?;
+        .ok_or_else(|| {
+            "llama.cpp response missing top_logprobs (server must be built with logit support)"
+                .to_string()
+        })?;
     let distribution = top
         .iter()
         .filter_map(|entry| {
@@ -161,7 +173,10 @@ pub struct KoboldCppProvider {
 
 impl KoboldCppProvider {
     pub fn new(base_url: &str) -> Self {
-        Self { base_url: base_url.trim_end_matches('/').to_string(), temperature: 0.7 }
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            temperature: 0.7,
+        }
     }
 }
 
@@ -169,10 +184,10 @@ impl LogitsCapableProvider for KoboldCppProvider {
     fn stream_with_sampler(
         &self,
         messages: &[ChatMessage],
-        sampler: &mut AntislopSampler,
+        _sampler: &mut AntislopSampler,
         on_token: &mut TokenSink,
     ) -> Result<(), ProviderError> {
-        let mut prompt = messages
+        let prompt = messages
             .iter()
             .map(|m| format!("{}: {}\n", m.role, m.content))
             .collect::<String>()
@@ -185,16 +200,19 @@ impl LogitsCapableProvider for KoboldCppProvider {
                 "max_length": 1,
                 "logit_bias": {},
             });
-            let response: serde_json::Value = ureq::post(&format!("{}/api/extra/generate", self.base_url))
-                .set("Content-Type", "application/json")
-                .send_json(body)
-                .map_err(|error| format!("koboldcpp request failed: {error}"))?
-                .into_json()
-                .map_err(|error| format!("koboldcpp bad JSON: {error}"))?;
+            let response: serde_json::Value =
+                ureq::post(&format!("{}/api/extra/generate", self.base_url))
+                    .set("Content-Type", "application/json")
+                    .send_json(body)
+                    .map_err(|error| format!("koboldcpp request failed: {error}"))?
+                    .into_json()
+                    .map_err(|error| format!("koboldcpp bad JSON: {error}"))?;
             let token = response
                 .pointer("/results/0/text")
                 .and_then(|value| value.as_str())
-                .ok_or_else(|| decode_endpoint_error(200, "koboldcpp response missing results/0/text"))?
+                .ok_or_else(|| {
+                    decode_endpoint_error(200, "koboldcpp response missing results/0/text")
+                })?
                 .to_string();
             if token == "</s>" || token.is_empty() {
                 return Ok(());

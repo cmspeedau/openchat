@@ -74,7 +74,9 @@ pub struct ProcessSampler {
 
 impl Default for ProcessSampler {
     fn default() -> Self {
-        Self { system: System::new() }
+        Self {
+            system: System::new(),
+        }
     }
 }
 
@@ -87,7 +89,8 @@ impl ProcessSampler {
     /// Refresh and return the process's CPU percentage, or `None` if it is gone.
     pub fn cpu_percent(&mut self, pid: u32) -> Option<f32> {
         let pid = Pid::from_u32(pid);
-        self.system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        self.system
+            .refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
         self.system.process(pid).map(|process| process.cpu_usage())
     }
 }
@@ -102,7 +105,10 @@ impl Slots {
     fn acquire(self: &Arc<Self>, cap: usize) -> Slot {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         while *active >= cap {
-            active = self.available.wait(active).unwrap_or_else(|e| e.into_inner());
+            active = self
+                .available
+                .wait(active)
+                .unwrap_or_else(|e| e.into_inner());
         }
         *active += 1;
         Slot(Arc::clone(self))
@@ -126,10 +132,18 @@ pub struct ManagedChild {
 }
 
 impl ManagedChild {
-    pub fn id(&self) -> u32 { self.child.id() }
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> { self.child.try_wait() }
-    pub fn wait(&mut self) -> io::Result<ExitStatus> { self.child.wait() }
-    pub fn kill(&mut self) -> io::Result<()> { self.child.kill() }
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
+    }
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.child.kill()
+    }
 }
 
 /// Configured launcher, process sampler and duty-cycle controller.
@@ -141,10 +155,15 @@ pub struct Governor {
 impl Governor {
     pub fn new(config: GovernorConfig) -> Result<Self, ConfigError> {
         config.validate()?;
-        Ok(Self { config, slots: Arc::default() })
+        Ok(Self {
+            config,
+            slots: Arc::default(),
+        })
     }
 
-    pub fn config(&self) -> &GovernorConfig { &self.config }
+    pub fn config(&self) -> &GovernorConfig {
+        &self.config
+    }
 
     /// Spawn a child after applying the configured nice level and thread cap.
     /// A slot is held until the returned handle is dropped.
@@ -166,7 +185,10 @@ impl Governor {
         }
         #[cfg(not(unix))]
         if self.config.nice_level != 0 {
-            return Err(io::Error::new(io::ErrorKind::Unsupported, "nice priority is unsupported on this platform"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "nice priority is unsupported on this platform",
+            ));
         }
         match command.spawn() {
             Ok(child) => Ok(ManagedChild { child, _slot: slot }),
@@ -180,7 +202,10 @@ impl Governor {
         #[cfg(not(unix))]
         {
             let _ = child;
-            return Err(io::Error::new(io::ErrorKind::Unsupported, "process duty-cycle throttling is unsupported on this platform"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "process duty-cycle throttling is unsupported on this platform",
+            ));
         }
         #[cfg(unix)]
         {
@@ -193,13 +218,19 @@ impl Governor {
             loop {
                 let start = Instant::now();
                 thread::sleep(running);
-                if let Some(status) = child.try_wait()? { return Ok(status); }
+                if let Some(status) = child.try_wait()? {
+                    return Ok(status);
+                }
                 signal(child.id(), libc::SIGSTOP)?;
                 thread::sleep(paused);
-                if let Some(status) = child.try_wait()? { return Ok(status); }
+                if let Some(status) = child.try_wait()? {
+                    return Ok(status);
+                }
                 signal(child.id(), libc::SIGCONT)?;
                 let elapsed = start.elapsed();
-                if elapsed < period { thread::sleep(period - elapsed); }
+                if elapsed < period {
+                    thread::sleep(period - elapsed);
+                }
             }
         }
     }
@@ -226,7 +257,10 @@ mod tests {
 
     #[test]
     fn config_rejects_invalid_cpu_percent_and_thread_cap() {
-        let mut config = GovernorConfig { max_cpu_percent: 0, ..GovernorConfig::default() };
+        let mut config = GovernorConfig {
+            max_cpu_percent: 0,
+            ..GovernorConfig::default()
+        };
         assert!(config.validate().is_err());
         config.max_cpu_percent = 101;
         assert!(config.validate().is_err());
@@ -237,7 +271,10 @@ mod tests {
 
     #[test]
     fn config_rejects_invalid_nice_level_and_period() {
-        let mut config = GovernorConfig { nice_level: 20, ..GovernorConfig::default() };
+        let mut config = GovernorConfig {
+            nice_level: 20,
+            ..GovernorConfig::default()
+        };
         assert!(config.validate().is_err());
         config.nice_level = 0;
         config.sample_interval = Duration::ZERO;
@@ -248,9 +285,16 @@ mod tests {
     fn child_launch_and_wait_work() {
         let governor = Governor::new(GovernorConfig::default()).unwrap();
         #[cfg(unix)]
-        let mut command = { let mut c = Command::new("true"); c };
+        let mut command = {
+            let mut c = Command::new("true");
+            c
+        };
         #[cfg(windows)]
-        let mut command = { let mut c = Command::new("cmd"); c.args(["/C", "exit 0"]); c };
+        let mut command = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 0"]);
+            c
+        };
         let status = governor.launch(&mut command).unwrap().wait().unwrap();
         assert!(status.success());
     }

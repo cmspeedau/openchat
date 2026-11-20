@@ -81,7 +81,11 @@ impl SlopLint {
                 let offset = start + offset;
                 if reported.insert((needle.clone(), offset)) {
                     findings.push(SlopFinding {
-                        kind: if self.config.phrases.contains(phrase) { "phrase" } else { "cliche" },
+                        kind: if self.config.phrases.contains(phrase) {
+                            "phrase"
+                        } else {
+                            "cliche"
+                        },
                         text: (*phrase).to_owned(),
                         offset,
                     });
@@ -95,7 +99,10 @@ impl SlopLint {
             if count > self.config.repeat_limit {
                 findings.push(SlopFinding {
                     kind: "repeat",
-                    text: format!("{word} appears {count} times (limit {})", self.config.repeat_limit),
+                    text: format!(
+                        "{word} appears {count} times (limit {})",
+                        self.config.repeat_limit
+                    ),
                     offset: usize::MAX,
                 });
             }
