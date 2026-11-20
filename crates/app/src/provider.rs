@@ -1,3 +1,4 @@
+use openchat_opencode::OpenCodeClient;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
@@ -108,6 +109,40 @@ impl Provider for OpenAICompatProvider {
         } else {
             Err("provider stream ended before the [DONE] marker".into())
         }
+    }
+}
+
+/// OpenCode-backed provider, attaching to a running OpenCode instance.
+pub struct OpenCodeProvider {
+    client: OpenCodeClient,
+}
+
+impl OpenCodeProvider {
+    pub fn from_env() -> Option<Self> {
+        let base_url = std::env::var("OPENCODE_URL").ok()?;
+        if base_url.trim().is_empty() {
+            return None;
+        }
+        let password = std::env::var("OPENCODE_PASSWORD").ok();
+        Some(Self {
+            client: OpenCodeClient::new(&base_url, password),
+        })
+    }
+}
+
+impl Provider for OpenCodeProvider {
+    fn stream(&self, messages: &[Message], on_chunk: &mut dyn FnMut(&str)) -> Result<(), String> {
+        let user_text = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .unwrap_or("");
+        let (_session_id, reply) = self.client.ask(None, user_text)?;
+        if !reply.is_empty() {
+            on_chunk(&reply);
+        }
+        Ok(())
     }
 }
 

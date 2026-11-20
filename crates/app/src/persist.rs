@@ -93,11 +93,13 @@ fn provider_to_str(choice: ProviderChoice) -> &'static str {
     match choice {
         ProviderChoice::Mock => "mock",
         ProviderChoice::OpenAICompat => "openai",
+        ProviderChoice::OpenCode => "opencode",
     }
 }
 fn provider_from_str(value: &str) -> ProviderChoice {
     match value {
         "openai" => ProviderChoice::OpenAICompat,
+        "opencode" => ProviderChoice::OpenCode,
         _ => ProviderChoice::Mock,
     }
 }

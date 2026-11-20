@@ -6,7 +6,9 @@ mod theme;
 
 use eframe::egui::{self, ScrollArea, SidePanel, TextEdit, Ui};
 use openchat_slop::{prompt::slop_law_prompt, SlopLint, SlopLintConfig};
-use provider::{Message as ProviderMessage, MockProvider, OpenAICompatProvider, Provider};
+use provider::{
+    Message as ProviderMessage, MockProvider, OpenAICompatProvider, OpenCodeProvider, Provider,
+};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
@@ -71,6 +73,7 @@ enum ProviderChoice {
     #[default]
     Mock,
     OpenAICompat,
+    OpenCode,
 }
 enum StreamEvent {
     Chunk(String),
@@ -302,6 +305,17 @@ impl OpenChatApp {
                             "Set OPENCHAT_API_KEY and OPENCHAT_BASE_URL, or enter a URL override.",
                         );
                     }
+                    let opencode_configured = std::env::var("OPENCODE_URL")
+                        .map(|u| !u.trim().is_empty())
+                        .unwrap_or(false);
+                    ui.add_enabled_ui(opencode_configured, |ui| {
+                        ui.radio_value(&mut c.provider, ProviderChoice::OpenCode, "OpenCode");
+                    });
+                    if !opencode_configured {
+                        ui.small(
+                            "Set OPENCODE_URL (and optional OPENCODE_PASSWORD) to use OpenCode.",
+                        );
+                    }
                     ui.label("Model override (optional)");
                     ui.add(
                         TextEdit::singleline(&mut c.model_override)
@@ -356,7 +370,7 @@ impl OpenChatApp {
             let body=display_draft(&self.draft);self.messages.push(Message{role:Role::User,body:body.clone()});if let Some(c)=self.conversations.iter_mut().find(|c|Some(c.id)==self.selected){c.preview=body.clone();}self.draft.clear();
             let mut messages=self.messages.iter().map(|m|ProviderMessage{role:match m.role{Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system"}.into(),content:m.body.clone()}).collect::<Vec<_>>();
             if self.slop_law{messages.insert(0,ProviderMessage{role:"system".into(),content:slop_law_prompt()});}
-            let(choice,model,url)=match self.conversations.iter().find(|c|Some(c.id)==self.selected){Some(c)=>(c.provider,c.model_override.clone(),c.base_url_override.clone()),None=>return};let provider:Result<Box<dyn Provider>,String>=match choice{ProviderChoice::Mock=>Ok(Box::new(MockProvider)),ProviderChoice::OpenAICompat=>OpenAICompatProvider::from_env_with_overrides(nonempty(&url),nonempty(&model)).map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenAI-compatible provider is not configured (set OPENCHAT_API_KEY and a base URL).".into())};let provider=match provider{Ok(p)=>p,Err(e)=>{self.messages.push(Message{role:Role::Assistant,body:format!("Provider error: {e}")});return}};self.messages.push(Message{role:Role::Assistant,body:String::new()});let(tx,rx)=mpsc::channel();self.reply_rx=Some(rx);self.pending=true;self.save_state();std::thread::spawn(move||{let result=provider.stream(&messages,&mut|chunk|{let _=tx.send(StreamEvent::Chunk(chunk.to_string()));});let _=tx.send(StreamEvent::Finished(result));});}
+            let(choice,model,url)=match self.conversations.iter().find(|c|Some(c.id)==self.selected){Some(c)=>(c.provider,c.model_override.clone(),c.base_url_override.clone()),None=>return};let provider:Result<Box<dyn Provider>,String>=match choice{ProviderChoice::Mock=>Ok(Box::new(MockProvider)),ProviderChoice::OpenAICompat=>OpenAICompatProvider::from_env_with_overrides(nonempty(&url),nonempty(&model)).map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenAI-compatible provider is not configured (set OPENCHAT_API_KEY and a base URL).".into()),ProviderChoice::OpenCode=>OpenCodeProvider::from_env().map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenCode provider is not configured (set OPENCODE_URL).".into())};let provider=match provider{Ok(p)=>p,Err(e)=>{self.messages.push(Message{role:Role::Assistant,body:format!("Provider error: {e}")});return}};self.messages.push(Message{role:Role::Assistant,body:String::new()});let(tx,rx)=mpsc::channel();self.reply_rx=Some(rx);self.pending=true;self.save_state();std::thread::spawn(move||{let result=provider.stream(&messages,&mut|chunk|{let _=tx.send(StreamEvent::Chunk(chunk.to_string()));});let _=tx.send(StreamEvent::Finished(result));});}
             if self.pending{ui.spinner();ui.small("Receiving reply…");}if send.clicked(){response.request_focus();}});
             ui.horizontal(|ui|{ui.add(TextEdit::singleline(&mut self.attachment_entry).hint_text("File path to attach"));if ui.button("Add file").clicked(){self.insert_attachment("file");}if ui.button("Add image").clicked(){self.insert_attachment("image");}});
             let mut remove=None;ui.horizontal_wrapped(|ui|{for(kind,segment)in composer_segments(&self.draft){if let Some(kind)=kind{let label=segment.rsplit('/').next().unwrap_or(&segment);ui.group(|ui|{ui.horizontal(|ui|{ui.label(format!("{} {label}",if kind=="image"{"🖼"}else{"📎"}));if ui.small_button("×").clicked(){remove=Some(format!("[[{kind}:{segment}]]"));} })});}else{ui.label(segment);}}});if let Some(token)=remove{self.draft=self.draft.replacen(&token,"",1);}
