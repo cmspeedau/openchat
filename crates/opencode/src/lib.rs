@@ -21,6 +21,76 @@ pub struct SessionInfo {
     pub title: Option<String>,
     #[serde(rename = "projectID", default)]
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<ModelRef>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct ModelRef {
+    pub id: String,
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenCodeModel {
+    pub id: String,
+    #[serde(rename = "modelID", default)]
+    pub model_id: String,
+    #[serde(rename = "providerID", default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub cost: Vec<ModelCostEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ModelCostEntry {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+}
+
+impl OpenCodeModel {
+    pub fn is_free(&self) -> bool {
+        if self.id.to_lowercase().contains("free") || self.name.to_lowercase().contains("free") {
+            return true;
+        }
+        self.cost
+            .iter()
+            .all(|entry| entry.input == 0.0 && entry.output == 0.0)
+            && !self.cost.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UsageWindow {
+    #[serde(default)]
+    pub percent: f64,
+    #[serde(default)]
+    pub limited: bool,
+    #[serde(rename = "resetsAt", default)]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GoUsage {
+    #[serde(default)]
+    pub rolling: UsageWindow,
+    #[serde(default)]
+    pub weekly: UsageWindow,
+    #[serde(default)]
+    pub monthly: UsageWindow,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UsageLimits {
+    #[serde(default)]
+    pub go: Option<GoUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -137,10 +207,37 @@ impl OpenCodeClient {
         self.get_json(&path)
     }
 
-    pub fn create_session(&self, title: Option<&str>) -> Result<SessionInfo, String> {
+    pub fn list_models(&self) -> Result<Vec<OpenCodeModel>, String> {
+        self.get_json("/api/model")
+    }
+
+    pub fn free_models(&self) -> Result<Vec<OpenCodeModel>, String> {
+        Ok(self
+            .list_models()?
+            .into_iter()
+            .filter(OpenCodeModel::is_free)
+            .collect())
+    }
+
+    pub fn usage_limits(&self) -> Result<UsageLimits, String> {
+        self.get_json("/api/experimental/usage/limits")
+    }
+
+    pub fn create_session(
+        &self,
+        title: Option<&str>,
+        model: Option<ModelRef>,
+    ) -> Result<SessionInfo, String> {
         let mut payload = json!({});
         if let Some(title) = title {
             payload["title"] = json!(title);
+        }
+        if let Some(model) = model {
+            payload["model"] = json!({
+                "id": model.id,
+                "providerID": model.provider_id,
+                "variant": model.variant,
+            });
         }
         self.post_json("/api/session", &payload)
     }
@@ -203,10 +300,32 @@ impl OpenCodeClient {
     }
 
     /// Create a session if needed, send a prompt, wait for completion, and return the assistant reply.
-    pub fn ask(&self, session_id: Option<&str>, text: &str) -> Result<(String, String), String> {
+    /// Only free models are allowed; if no model is provided, the first free model is used.
+    pub fn ask(
+        &self,
+        session_id: Option<&str>,
+        text: &str,
+        model: Option<ModelRef>,
+    ) -> Result<(String, String), String> {
+        let model = match model {
+            Some(model) => Some(model),
+            None => self.free_models()?.into_iter().next().map(|m| ModelRef {
+                id: if m.model_id.is_empty() {
+                    m.id.clone()
+                } else {
+                    m.model_id.clone()
+                },
+                provider_id: if m.provider_id.is_empty() {
+                    "opencode".to_string()
+                } else {
+                    m.provider_id
+                },
+                variant: None,
+            }),
+        };
         let session_id = match session_id {
             Some(id) => id.to_string(),
-            None => self.create_session(Some("openchat"))?.id,
+            None => self.create_session(Some("openchat"), model.clone())?.id,
         };
         self.send_prompt(&session_id, text)?;
         self.wait_for_idle(&session_id, Duration::from_secs(120))?;

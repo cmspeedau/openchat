@@ -138,7 +138,7 @@ impl Provider for OpenCodeProvider {
             .find(|message| message.role == "user")
             .map(|message| message.content.as_str())
             .unwrap_or("");
-        let (_session_id, reply) = self.client.ask(None, user_text)?;
+        let (_session_id, reply) = self.client.ask(None, user_text, None)?;
         if !reply.is_empty() {
             on_chunk(&reply);
         }

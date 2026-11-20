@@ -5,6 +5,7 @@ mod subagents;
 mod theme;
 
 use eframe::egui::{self, ScrollArea, SidePanel, TextEdit, Ui};
+use openchat_opencode::OpenCodeClient;
 use openchat_slop::{prompt::slop_law_prompt, SlopLint, SlopLintConfig};
 use provider::{
     Message as ProviderMessage, MockProvider, OpenAICompatProvider, OpenCodeProvider, Provider,
@@ -98,6 +99,7 @@ struct OpenChatApp {
     show_settings: bool,
     settings: AppSettings,
     settings_selected: usize,
+    opencode_limits: String,
 }
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 enum ProviderChoice {
@@ -641,6 +643,52 @@ impl OpenChatApp {
                                 });
                             if ui.button("Save provider settings").clicked() {
                                 save_needed = true;
+                            }
+                            if ui.button("Refresh OpenCode usage limits").clicked() {
+                                if let Ok(url) = std::env::var("OPENCODE_URL") {
+                                    if !url.trim().is_empty() {
+                                        let password = std::env::var("OPENCODE_PASSWORD").ok();
+                                        let client = OpenCodeClient::new(&url, password);
+                                        match client.usage_limits() {
+                                            Ok(limits) => {
+                                                let mut text = String::new();
+                                                if let Some(go) = limits.go {
+                                                    text.push_str(&format!(
+                                                        "Go rolling: {:.0}% (limited: {})\n",
+                                                        go.rolling.percent, go.rolling.limited
+                                                    ));
+                                                    text.push_str(&format!(
+                                                        "Go weekly: {:.0}% (limited: {})\n",
+                                                        go.weekly.percent, go.weekly.limited
+                                                    ));
+                                                    text.push_str(&format!(
+                                                        "Go monthly: {:.0}% (limited: {})",
+                                                        go.monthly.percent, go.monthly.limited
+                                                    ));
+                                                } else {
+                                                    text = "No usage limits returned.".into();
+                                                }
+                                                self.opencode_limits = text;
+                                            }
+                                            Err(error) => self.opencode_limits = format!("Error: {error}"),
+                                        }
+                                        if let Ok(models) = client.free_models() {
+                                            self.opencode_limits.push_str(&format!(
+                                                "\nFree models: {}",
+                                                models.len()
+                                            ));
+                                        }
+                                    } else {
+                                        self.opencode_limits = "OPENCODE_URL is not set.".into();
+                                    }
+                                } else {
+                                    self.opencode_limits = "OPENCODE_URL is not set.".into();
+                                }
+                            }
+                            if !self.opencode_limits.is_empty() {
+                                ui.separator();
+                                ui.label("OpenCode status:");
+                                ui.monospace(&self.opencode_limits);
                             }
                         }
                         3 => {
