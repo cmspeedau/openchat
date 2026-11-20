@@ -58,6 +58,10 @@ struct AppSettings {
     show_conversation_list: bool,
     show_skills_panel: bool,
     font_size: f32,
+    default_provider: String,
+    openai_base_url: String,
+    openai_model: String,
+    confirm_clear_conversations: bool,
 }
 
 impl Default for AppSettings {
@@ -67,6 +71,10 @@ impl Default for AppSettings {
             show_conversation_list: true,
             show_skills_panel: true,
             font_size: 14.0,
+            default_provider: "mock".into(),
+            openai_base_url: String::new(),
+            openai_model: String::new(),
+            confirm_clear_conversations: true,
         }
     }
 }
@@ -279,8 +287,12 @@ impl eframe::App for OpenChatApp {
             agent.advance_demo(now);
         }
         self.settings_window(ctx);
-        self.conversations_panel(ctx);
-        self.skills_panel(ctx);
+        if self.settings.show_conversation_list {
+            self.conversations_panel(ctx);
+        }
+        if self.settings.show_skills_panel {
+            self.skills_panel(ctx);
+        }
         self.chat_panel(ctx);
         if self.pending {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -418,7 +430,7 @@ impl OpenChatApp {
             let body=display_draft(&self.draft);self.messages.push(Message{role:Role::User,body:body.clone()});if let Some(c)=self.conversations.iter_mut().find(|c|Some(c.id)==self.selected){c.preview=body.clone();}self.draft.clear();
             let mut messages=self.messages.iter().map(|m|ProviderMessage{role:match m.role{Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system"}.into(),content:m.body.clone()}).collect::<Vec<_>>();
             if self.slop_law{messages.insert(0,ProviderMessage{role:"system".into(),content:slop_law_prompt()});}
-            let(choice,model,url)=match self.conversations.iter().find(|c|Some(c.id)==self.selected){Some(c)=>(c.provider,c.model_override.clone(),c.base_url_override.clone()),None=>return};let provider:Result<Box<dyn Provider>,String>=match choice{ProviderChoice::Mock=>Ok(Box::new(MockProvider)),ProviderChoice::OpenAICompat=>OpenAICompatProvider::from_env_with_overrides(nonempty(&url),nonempty(&model)).map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenAI-compatible provider is not configured (set OPENCHAT_API_KEY and a base URL).".into()),ProviderChoice::OpenCode=>OpenCodeProvider::from_env().map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenCode provider is not configured (set OPENCODE_URL).".into())};let provider=match provider{Ok(p)=>p,Err(e)=>{self.messages.push(Message{role:Role::Assistant,body:format!("Provider error: {e}")});return}};self.messages.push(Message{role:Role::Assistant,body:String::new()});let(tx,rx)=mpsc::channel();self.reply_rx=Some(rx);self.pending=true;self.save_state();std::thread::spawn(move||{let result=provider.stream(&messages,&mut|chunk|{let _=tx.send(StreamEvent::Chunk(chunk.to_string()));});let _=tx.send(StreamEvent::Finished(result));});}
+            let(choice,model,url)=match self.conversations.iter().find(|c|Some(c.id)==self.selected){Some(c)=>(c.provider,c.model_override.clone(),c.base_url_override.clone()),None=>return};let url_override=if url.trim().is_empty(){nonempty(&self.settings.openai_base_url)}else{nonempty(&url)};let model_override=if model.trim().is_empty(){nonempty(&self.settings.openai_model)}else{nonempty(&model)};let provider:Result<Box<dyn Provider>,String>=match choice{ProviderChoice::Mock=>Ok(Box::new(MockProvider)),ProviderChoice::OpenAICompat=>OpenAICompatProvider::from_env_with_overrides(url_override,model_override).map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenAI-compatible provider is not configured (set OPENCHAT_API_KEY and a base URL).".into()),ProviderChoice::OpenCode=>OpenCodeProvider::from_env().map(|p|Box::new(p)as Box<dyn Provider>).ok_or_else(||"OpenCode provider is not configured (set OPENCODE_URL).".into())};let provider=match provider{Ok(p)=>p,Err(e)=>{self.messages.push(Message{role:Role::Assistant,body:format!("Provider error: {e}")});return}};self.messages.push(Message{role:Role::Assistant,body:String::new()});let(tx,rx)=mpsc::channel();self.reply_rx=Some(rx);self.pending=true;self.save_state();std::thread::spawn(move||{let result=provider.stream(&messages,&mut|chunk|{let _=tx.send(StreamEvent::Chunk(chunk.to_string()));});let _=tx.send(StreamEvent::Finished(result));});}
             if self.pending{ui.spinner();ui.small("Receiving reply…");}if send.clicked(){response.request_focus();}});
             ui.horizontal(|ui|{ui.add(TextEdit::singleline(&mut self.attachment_entry).hint_text("File path to attach"));if ui.button("Add file").clicked(){self.insert_attachment("file");}if ui.button("Add image").clicked(){self.insert_attachment("image");}});
             let mut remove=None;ui.horizontal_wrapped(|ui|{for(kind,segment)in composer_segments(&self.draft){if let Some(kind)=kind{let label=segment.rsplit('/').next().unwrap_or(&segment);ui.group(|ui|{ui.horizontal(|ui|{ui.label(format!("{} {label}",if kind=="image"{"🖼"}else{"📎"}));if ui.small_button("×").clicked(){remove=Some(format!("[[{kind}:{segment}]]"));} })});}else{ui.label(segment);}}});if let Some(token)=remove{self.draft=self.draft.replacen(&token,"",1);}
@@ -568,7 +580,9 @@ impl OpenChatApp {
                             "Appearance",
                             "Providers",
                             "Chat",
+                            "Sessions",
                             "Shortcuts",
+                            "About",
                         ]
                         .iter()
                         .enumerate()
@@ -584,6 +598,14 @@ impl OpenChatApp {
                             ui.heading("General");
                             ui.label("openchat desktop client");
                             ui.small("Settings are stored in openchat-settings.json.");
+                            ui.small("Conversation state is stored in openchat-state.json.");
+                            if ui.button("Reset conversation state").clicked() {
+                                self.conversations.clear();
+                                self.messages.clear();
+                                self.selected = None;
+                                let _ = std::fs::remove_file(persist::DEFAULT_PATH);
+                                self.save_state();
+                            }
                         }
                         1 => {
                             ui.heading("Appearance");
@@ -591,6 +613,8 @@ impl OpenChatApp {
                             if ui.button("Apply font size").clicked() {
                                 save_needed = true;
                             }
+                            ui.checkbox(&mut self.settings.show_conversation_list, "Show conversation list");
+                            ui.checkbox(&mut self.settings.show_skills_panel, "Show skills panel");
                             ui.small("Tokyo Night is the current theme.");
                         }
                         2 => {
@@ -598,6 +622,26 @@ impl OpenChatApp {
                             ui.label("OpenAI-compatible: OPENCHAT_API_KEY, OPENCHAT_BASE_URL, OPENCHAT_MODEL");
                             ui.label("OpenCode: OPENCODE_URL, OPENCODE_PASSWORD");
                             ui.small("Environment variables are read at runtime.");
+                            ui.separator();
+                            ui.label("Global OpenAI base URL override");
+                            ui.text_edit_singleline(&mut self.settings.openai_base_url);
+                            ui.label("Global OpenAI model override");
+                            ui.text_edit_singleline(&mut self.settings.openai_model);
+                            ui.label("Default provider for new chats");
+                            egui::ComboBox::from_label("")
+                                .selected_text(&self.settings.default_provider)
+                                .show_ui(ui, |ui| {
+                                    for value in ["mock", "openai", "opencode"] {
+                                        ui.selectable_value(
+                                            &mut self.settings.default_provider,
+                                            value.to_string(),
+                                            value,
+                                        );
+                                    }
+                                });
+                            if ui.button("Save provider settings").clicked() {
+                                save_needed = true;
+                            }
                         }
                         3 => {
                             ui.heading("Chat");
@@ -615,10 +659,38 @@ impl OpenChatApp {
                             }
                         }
                         4 => {
+                            ui.heading("Sessions");
+                            ui.label(format!("Conversations: {}", self.conversations.len()));
+                            ui.label(format!("Messages: {}", self.messages.len()));
+                            if self.settings.confirm_clear_conversations {
+                                if ui.button("Clear all conversations").clicked() {
+                                    self.conversations.clear();
+                                    self.messages.clear();
+                                    self.selected = None;
+                                    self.save_state();
+                                }
+                            } else if ui.button("Clear all conversations").clicked() {
+                                self.conversations.clear();
+                                self.messages.clear();
+                                self.selected = None;
+                                self.save_state();
+                            }
+                            ui.checkbox(
+                                &mut self.settings.confirm_clear_conversations,
+                                "Confirm before clearing",
+                            );
+                        }
+                        5 => {
                             ui.heading("Shortcuts");
                             ui.label("Enter: send message");
                             ui.label("Shift+Enter: new line");
                             ui.label("Ctrl/Cmd+K: (reserved)");
+                        }
+                        6 => {
+                            ui.heading("About");
+                            ui.label("openchat");
+                            ui.label("Rust + egui desktop client");
+                            ui.small("Tokyo Night theme");
                         }
                         _ => {}
                     });
