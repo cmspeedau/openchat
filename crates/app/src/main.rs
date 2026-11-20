@@ -51,6 +51,26 @@ struct Skill {
     name: String,
     description: String,
 }
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct AppSettings {
+    slop_law_default: bool,
+    show_conversation_list: bool,
+    show_skills_panel: bool,
+    font_size: f32,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            slop_law_default: true,
+            show_conversation_list: true,
+            show_skills_panel: true,
+            font_size: 14.0,
+        }
+    }
+}
+
 #[derive(Default)]
 struct OpenChatApp {
     conversations: Vec<Conversation>,
@@ -67,6 +87,9 @@ struct OpenChatApp {
     saved_image: Option<String>,
     slop_law: bool,
     lint_output: Option<String>,
+    show_settings: bool,
+    settings: AppSettings,
+    settings_selected: usize,
 }
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 enum ProviderChoice {
@@ -88,12 +111,25 @@ enum SelectionAction {
 impl OpenChatApp {
     fn load_or_default() -> Self {
         let mut app = Self::default();
+        app.settings = Self::load_settings();
+        app.slop_law = app.settings.slop_law_default;
         if let Some((conversations, messages, selected)) = persist::load(persist::DEFAULT_PATH) {
             app.conversations = conversations;
             app.messages = messages;
             app.selected = selected.filter(|id| app.conversations.iter().any(|c| c.id == *id));
         }
         app
+    }
+    fn load_settings() -> AppSettings {
+        std::fs::read_to_string("openchat-settings.json")
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+    fn save_settings(&self) {
+        if let Ok(text) = serde_json::to_string_pretty(&self.settings) {
+            let _ = std::fs::write("openchat-settings.json", text);
+        }
     }
     fn save_state(&self) {
         persist::save(
@@ -165,6 +201,17 @@ impl eframe::App for OpenChatApp {
                 }
             }
         }
+        egui::TopBottomPanel::top("top_menu").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("openchat");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Settings").clicked() {
+                        self.show_settings = !self.show_settings;
+                    }
+                });
+            });
+        });
+
         let mut finished = false;
         for event in events {
             match event {
@@ -231,6 +278,7 @@ impl eframe::App for OpenChatApp {
         for agent in &mut self.subagents {
             agent.advance_demo(now);
         }
+        self.settings_window(ctx);
         self.conversations_panel(ctx);
         self.skills_panel(ctx);
         self.chat_panel(ctx);
@@ -499,4 +547,86 @@ fn transcript_svg(text: &str) -> String {
     let height = (lines.len().max(1) * 24 + 40).min(12000);
     let nodes=lines.iter().enumerate().map(|(i,line)|format!("<text x=\"24\" y=\"{}\" font-family=\"sans-serif\" font-size=\"16\" fill=\"#20242b\">{line}</text>",32+i*24)).collect::<String>();
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"900\" height=\"{height}\"><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/>{nodes}</svg>")
+}
+
+impl OpenChatApp {
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+        let mut open = self.show_settings;
+        let mut save_needed = false;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        for (index, label) in [
+                            "General",
+                            "Appearance",
+                            "Providers",
+                            "Chat",
+                            "Shortcuts",
+                        ]
+                        .iter()
+                        .enumerate()
+                        {
+                            if ui.selectable_label(self.settings_selected == index, *label).clicked() {
+                                self.settings_selected = index;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| match self.settings_selected {
+                        0 => {
+                            ui.heading("General");
+                            ui.label("openchat desktop client");
+                            ui.small("Settings are stored in openchat-settings.json.");
+                        }
+                        1 => {
+                            ui.heading("Appearance");
+                            ui.add(egui::Slider::new(&mut self.settings.font_size, 12.0..=20.0).text("Font size"));
+                            if ui.button("Apply font size").clicked() {
+                                save_needed = true;
+                            }
+                            ui.small("Tokyo Night is the current theme.");
+                        }
+                        2 => {
+                            ui.heading("Providers");
+                            ui.label("OpenAI-compatible: OPENCHAT_API_KEY, OPENCHAT_BASE_URL, OPENCHAT_MODEL");
+                            ui.label("OpenCode: OPENCODE_URL, OPENCODE_PASSWORD");
+                            ui.small("Environment variables are read at runtime.");
+                        }
+                        3 => {
+                            ui.heading("Chat");
+                            if ui
+                                .checkbox(&mut self.settings.slop_law_default, "Enable Slop Law by default")
+                                .changed()
+                            {
+                                self.slop_law = self.settings.slop_law_default;
+                                save_needed = true;
+                            }
+                            ui.checkbox(&mut self.settings.show_conversation_list, "Show conversation list");
+                            ui.checkbox(&mut self.settings.show_skills_panel, "Show skills panel");
+                            if ui.button("Save").clicked() {
+                                save_needed = true;
+                            }
+                        }
+                        4 => {
+                            ui.heading("Shortcuts");
+                            ui.label("Enter: send message");
+                            ui.label("Shift+Enter: new line");
+                            ui.label("Ctrl/Cmd+K: (reserved)");
+                        }
+                        _ => {}
+                    });
+                });
+            });
+        self.show_settings = open;
+        if save_needed {
+            self.save_settings();
+        }
+    }
 }
