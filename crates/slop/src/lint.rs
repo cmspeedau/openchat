@@ -29,7 +29,7 @@ impl Default for SlopLintConfig {
                 "a testament to",
             ]
             .iter()
-            .map(str::to_owned)
+            .map(|s| (*s).to_owned())
             .collect(),
             cliches: [
                 "eyes sparkled like",
@@ -39,11 +39,11 @@ impl Default for SlopLintConfig {
                 "time stood still",
             ]
             .iter()
-            .map(str::to_owned)
+            .map(|s| (*s).to_owned())
             .collect(),
             repeat_watch: ["tapestry", "testament", "myriad", "nuanced", "multifaceted"]
                 .iter()
-                .map(str::to_owned)
+                .map(|s| (*s).to_owned())
                 .collect(),
             repeat_limit: 2,
         }

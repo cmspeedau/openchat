@@ -21,7 +21,7 @@ impl LogitsStep {
         Logits::new(
             self.distribution
                 .iter()
-                .map(|(token, logit)| (token.clone(), *logit))
+                .map(|(token, logit)| (token.clone(), *logit as f32))
                 .collect(),
         )
     }

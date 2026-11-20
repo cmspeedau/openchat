@@ -24,10 +24,13 @@ pub fn save(path: &str, conversations: &[Conversation], messages: &[Message], se
         })).collect::<Vec<Value>>(),
         "selected": selected,
     });
-    if let Err(error) = serde_json::to_string_pretty(&state)
-        .and_then(|text| std::fs::write(path, text).map_err(|e| e.into()))
-    {
-        eprintln!("failed to save state: {error}");
+    match serde_json::to_string_pretty(&state) {
+        Ok(text) => {
+            if let Err(error) = std::fs::write(path, text) {
+                eprintln!("failed to save state: {error}");
+            }
+        }
+        Err(error) => eprintln!("failed to save state: {error}"),
     }
 }
 
